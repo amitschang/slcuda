@@ -1,0 +1,146 @@
+cunew
+
+ SYNOPSIS
+  Load an array into device memory
+
+ USAGE
+  SLcuda_Type = cunew(Double_Type arr[])
+
+ DESCRIPTION 
+  Load the array in `arr' into the currently selected GPU device
+  memory. The object returned is of SLcuda_Type which can be used as
+  arguments to device kernel functions.
+
+ SEE ALSO
+  cuarr, cuget
+
+--------------------------------------------------------------
+
+cuarr
+ 
+ SYNOPSIS
+  initialize an empty (or single valued) array on device
+
+ USAGE
+  SLcuda_Type cuarr(Int_Type dimensions[] [, Double_Type initval])
+
+ DESCRIPTION
+  Create an array on selected GPU device. The first argument
+  `dimensions' is an array of lenght N_dimensions that gives the
+  length of each dimension. The second argument, if specified, gives
+  the inital value of the array. If unspecified, the initial value
+  will be junk (not 0).
+
+ EXAMPLE
+  create a 1024x1024 element array, initialized to 0:
+
+   image = cuarr([1024,1024],0.0);
+
+ SEE ALSO
+  cunew, cuget
+
+--------------------------------------------------------------
+
+cuget
+
+ SYNOPSIS
+  Copy a device array to main memory
+
+ USAGE
+  Double_Type[] = cuget(SLcuda_Type x);
+
+ DESCRIPTION
+  Retrieve a device array specified by `x' back to main memory. This
+  function essentially performs the oppisite function of cunew or
+  cuarr, and is required to make use of computations done on the
+  device. The returned array will have dimensions as specified in the
+  cunew or cuarr.
+
+ SEE ALSO
+  cunew, cuarr
+
+--------------------------------------------------------------
+
+cufree
+
+ SYNOPSIS
+  Free device memory associated with an array
+
+ USAGE
+  cufree( SLcuda_Type x)
+
+ DESCRIPTION
+  Free the on device memory associated with cuda object `x'. The
+  object `x' will be marked as invalid, which can be seen in a call to
+  `cuda_objinfo'.
+
+ SEE ALSO
+  cunew, cuarr, cuget
+ 
+--------------------------------------------------------------
+
+cuda_add_function
+
+ SYNOPSIS
+  Add a device kernel and calling function interactively
+ 
+ USAGE
+  cuda_add_function( String name, String kernel_code)
+
+ DESCRIPTION
+  Create a function named `name' which will setup args and call the
+  device kernel code in `kernel_code'. The kernel function name (which
+  need not be the same as `name') and arguments will be derived
+  directly from the code supplied. 
+
+  *IMPORTANT NOTE* In order to provide seemless interaction, the user
+  must have the last argument in the kernel definition be an integer
+  that will get passed the data length, which will be derived from the
+  first SLcuda_Type argument. This will not be an argument passed to
+  the SLang function, but must appear in the kernel (even if not
+  used).
+
+ EXAMPLE
+  Lets write a kernel that trivially multiplies two vectors called
+  "myvecmul"
+
+   kernel =  "__global__ void vmul (float *a, float *b, float *o, int N)";
+   kernel += "{ int i = blockIdx.x*blockDim.x+threadIdx.x;";
+   kernel += "  if (i<N){ o[i]=a[i]*b[i]; }";
+   cuda_add_function("myvecmul",kernel);
+
+  We see why the "int N" argument is necessary, in this case, the
+  internal handler will pass the total length of `a' to N. This
+  function can then be called from Slang as:
+  
+   x=cuarr(100,10.0);
+   y=cuarr(100,9.0);
+   o=cuarr(100);
+   myvecmul(x,y,o);
+   oo=cuget(o);
+   where(oo!=90.0)==0;
+   1
+
+ SEE ALSO
+  cuda_add_function_file, cunew, cuarr, cuget
+
+--------------------------------------------------------------
+
+cuda_add_function_file
+
+ SYNOPSIS
+  Add a device kernel from a file
+
+ USAGE
+  cuda_add_function_file(String filename [, String function_name])
+
+ DESCRIPTION
+  Add a device kernel and handler function as per `cuda_add_function',
+  except the kernel code is stored in the ASCII text file
+  `filename'. The function name, if not provided, is derived from the
+  filename without extensions, so, for example, the file "myfunc.cu"
+  would be loaded into function `myfunc'. The second argument
+  overrides this behaviour and loads into `function_name' instead.
+
+ SEE ALSO
+  cuda_add_function_file
