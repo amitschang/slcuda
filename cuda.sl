@@ -10,6 +10,9 @@ variable NVCC_C_FLAGS="-fPIC";
 variable NVCC_INC="-I/usr/local/cuda/include";
 variable NVCC_LIB="-L/usr/local/cuda/lib64";
 
+variable CURAND_DEFAULT_GEN_TYPE=CURAND_RNG_PSEUDO_DEFAULT;
+variable CURAND_DEFAULT_GEN;
+
 private define nvcompileandimport(modname){
     variable r;
     variable odir=getcwd();
@@ -162,4 +165,107 @@ define cuda_add_function_file(filename){
     variable kernel=strjoin(fgetslines(fp),"\n");
     ()=fclose(fp);
     cuda_add_function(name,kernel);
+}
+
+define curand_get_default_gen (){
+    if (not __is_initialized(&CURAND_DEFAULT_GEN)){
+	CURAND_DEFAULT_GEN=curand_new(CURAND_DEFAULT_GEN_TYPE,[_time,getpid]);
+    }
+    return CURAND_DEFAULT_GEN;
+}
+
+define curand (){
+    variable arg=();
+    variable gen;
+    variable cuda;
+
+    if (_NARGS==2){
+	gen=();
+    }
+    else {
+	gen=curand_get_default_gen();
+    }
+    if (typeof(arg)==Integer_Type){
+	cuda=cuarr(arg);
+    }
+    else {
+	cuda=arg;
+    }
+    curand_gen(CURAND_DEFAULT, gen, cuda);
+    if (typeof(arg)==Integer_Type){
+	return cuda;
+    }
+}
+
+define curand_uniform (){
+    variable arg=();
+    variable gen;
+    variable cuda;
+
+    if (_NARGS==2){
+	gen=();
+    }
+    else {
+	gen=curand_get_default_gen();
+    }
+    if (typeof(arg)==Integer_Type){
+	cuda=cuarr(arg);
+    }
+    else {
+	cuda=arg;
+    }
+    curand_gen(CURAND_UNIFORM, gen, cuda);
+    if (typeof(arg)==Integer_Type){
+	return cuda;
+    }
+}
+
+define curand_normal (){
+    variable arg=();
+    variable sigma=();
+    variable mean=();
+    variable gen;
+    variable cuda;
+
+    if (_NARGS==4){
+	gen=();
+    }
+    else {
+	gen=curand_get_default_gen();
+    }
+    if (typeof(arg)==Integer_Type){
+	cuda=cuarr(arg);
+    }
+    else {
+	cuda=arg;
+    }
+    curand_gen(CURAND_NORMAL, gen, cuda, mean, sigma);
+    if (typeof(arg)==Integer_Type){
+	return cuda;
+    }
+}
+
+define curand_lognormal(){
+    variable arg=();
+    variable sigma=();
+    variable mean=();
+    variable gen;
+    variable cuda;
+
+    if (_NARGS==4){
+	gen=();
+    }
+    else {
+	gen=curand_get_default_gen();
+    }
+    if (typeof(arg)==Integer_Type){
+	cuda=cuarr(arg);
+    }
+    else {
+	cuda=arg;
+    }
+    curand_gen(CURAND_LOGNORMAL, gen, cuda, mean, sigma);
+    if (typeof(arg)==Integer_Type){
+	return cuda;
+    }
 }

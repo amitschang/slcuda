@@ -2,10 +2,16 @@
 
 #include <stdio.h>
 #include <cuda.h>
+#include <curand.h>
 #include <slang.h>
 SLANG_MODULE(cuda);
 
 #define CUDA_FORCE 100
+#define SLCURAND_DEFAULT 0
+#define SLCURAND_UNIFORM 1
+#define SLCURAND_NORMAL 2
+#define SLCURAND_LOGNORMAL 3
+#define SLCURAND_POISSON 4
 
 int SLCUDA_BLOCK_SIZE=256;
 
@@ -307,6 +313,13 @@ typedef struct
 }
 SLcuda_Type;
 
+static int SLcurand_Type_Id = -1;
+typedef struct
+{
+  curandGenerator_t gen;
+}
+SLcurand_Type;
+
 static void slcuda_cuda_info (void)
 {
   SLcuda_Type *cuda;
@@ -483,6 +496,144 @@ static void slcuda_fetch_array (void)
   (void) SLang_push_array(arr,1);
 }
 
+static long slcurand_calc_seed (SLang_Array_Type *seed_arr)
+{
+  unsigned long seed;
+  int i;
+
+  if (1==seed_arr->num_elements)
+    seed = (unsigned long)((int *)seed_arr->data)[0];
+  else
+    seed = ((unsigned long)((int *)seed_arr->data)[0]<<32) | 
+      (unsigned long)((int*)seed_arr->data)[1];
+  if (seed_arr->num_elements > 2){
+    for (i=2;i<seed_arr->num_elements;i++){
+      seed = seed*(unsigned long)((int *)seed_arr->data)[i];
+    }
+  }
+  
+  return seed;
+}
+
+static void slcurand_new (void)
+{
+  int type;
+  SLang_Array_Type *seed_arr;
+  SLang_MMT_Type *mmt_g;
+  SLcurand_Type *gen_o;
+  curandGenerator_t gen;
+  unsigned long seed;
+  
+  if (2==SLang_Num_Function_Args)
+    if (-1==SLang_pop_array_of_type(&seed_arr,SLANG_INT_TYPE))
+      return;
+
+  if (-1==SLang_pop_int(&type))
+    return;
+  
+  curandCreateGenerator(&gen, (curandRngType_t)type);
+
+  if (2==SLang_Num_Function_Args){
+    seed = slcurand_calc_seed(seed_arr);
+    curandSetPseudoRandomGeneratorSeed(gen, seed);
+  }
+  
+  gen_o = (SLcurand_Type *)SLmalloc(sizeof(SLcurand_Type));
+  gen_o->gen = gen;
+
+  mmt_g=SLang_create_mmt(SLcurand_Type_Id, (VOID_STAR)gen_o);
+
+  if (0==SLang_push_mmt(mmt_g)){
+    return;
+  }
+  
+  SLang_free_mmt(mmt_g);
+}
+
+static void slcurand_destroy (SLtype type, VOID_STAR f)
+{
+  curandDestroyGenerator(((SLcurand_Type *)f)->gen);
+}
+
+static void slcurand_seed (void)
+{
+  SLang_Array_Type *seed_arr;
+  SLang_MMT_Type *mmt_g;
+  SLcurand_Type *gen;
+  unsigned long seed;
+  
+  if (-1==SLang_pop_array_of_type(&seed_arr,SLANG_INT_TYPE))
+    return;
+
+  if (NULL==(mmt_g=SLang_pop_mmt(SLcurand_Type_Id)))
+    return;
+  if (NULL==(gen=(SLcurand_Type *)SLang_object_from_mmt(mmt_g)))
+    return;
+
+  seed = slcurand_calc_seed(seed_arr);
+
+  curandSetPseudoRandomGeneratorSeed(gen->gen, seed);
+}
+
+static void slcurand_generate (void)
+{
+  SLang_MMT_Type *mmt_g;
+  SLcurand_Type *gen;
+  SLang_MMT_Type *mmt_c;
+  SLcuda_Type *cuda;
+  int type;
+  double arg1,arg2;
+  curandStatus_t ret;
+  
+  if (5==SLang_Num_Function_Args){
+    if (-1==SLang_pop_double(&arg2))
+      return;
+    if (-1==SLang_pop_double(&arg1))
+      return;
+  }
+  if (4==SLang_Num_Function_Args){
+    if (-1==SLang_pop_double(&arg1))
+      return;
+  }
+  if (NULL==(mmt_c=SLang_pop_mmt(SLcuda_Type_Id)))
+    return;
+  if (NULL==(mmt_g=SLang_pop_mmt(SLcurand_Type_Id)))
+    return;
+
+  if (NULL==(cuda=(SLcuda_Type *)SLang_object_from_mmt(mmt_c)))
+    return;
+  if (NULL==(gen=(SLcurand_Type *)SLang_object_from_mmt(mmt_g)))
+    return;
+
+  if (-1==SLang_pop_int(&type))
+    return;
+
+  switch(type){
+  case SLCURAND_DEFAULT:
+    ret = curandGenerate(gen->gen, (unsigned int *)cuda->dptr, cuda->nelems);
+    break;
+  case SLCURAND_UNIFORM:
+    ret = curandGenerateUniform(gen->gen, (float *)cuda->dptr, cuda->nelems);
+    break;
+  case SLCURAND_NORMAL:
+    ret = curandGenerateNormal(gen->gen, (float *)cuda->dptr, cuda->nelems,
+			       (float)arg1, (float)arg2);
+    break;
+  case SLCURAND_LOGNORMAL:
+    ret = curandGenerateNormal(gen->gen, (float *)cuda->dptr, cuda->nelems,
+			       (float)arg1, (float)arg2);
+    break;
+  /* 
+   * Seems not available in my version...
+   *
+   * case SLCURAND_POISSON:
+   *   ret = curandGeneratePoisson(*gen, cuda->dptr, cuda->nelems,
+   * 				(float)arg1);
+   *   break;
+   */
+  }
+}
+    
 static void slcuda_smooth (void)
 {
   SLang_MMT_Type *mmt_img;
@@ -782,6 +933,22 @@ static int slcuda_bin_op_op (int op, SLtype a_type, VOID_STAR ap, SLuindex_Type 
   return 1;
 }
 
+static SLang_IConstant_Type Module_IConstants [] =
+{  
+  MAKE_ICONSTANT("CURAND_RNG_PSEUDO_DEFAULT",CURAND_RNG_PSEUDO_DEFAULT),
+  MAKE_ICONSTANT("CURAND_RNG_PSEUDO_XORWOW",CURAND_RNG_PSEUDO_XORWOW),
+  MAKE_ICONSTANT("CURAND_RNG_PSEUDO_MRG32K3A",CURAND_RNG_PSEUDO_MRG32K3A),
+  MAKE_ICONSTANT("CURAND_RNG_PSEUDO_MTGP32",CURAND_RNG_PSEUDO_MTGP32),
+  MAKE_ICONSTANT("CURAND_RNG_QUASI_DEFAULT",CURAND_RNG_QUASI_DEFAULT),
+  MAKE_ICONSTANT("CURAND_RNG_QUASI_SOBOL32",CURAND_RNG_QUASI_SOBOL32),
+  MAKE_ICONSTANT("CURAND_DEFAULT",SLCURAND_DEFAULT),
+  MAKE_ICONSTANT("CURAND_UNIFORM",SLCURAND_UNIFORM),
+  MAKE_ICONSTANT("CURAND_NORMAL",SLCURAND_NORMAL),
+  MAKE_ICONSTANT("CURAND_LOGNORMAL",SLCURAND_LOGNORMAL),
+  MAKE_ICONSTANT("CURAND_POISSON",SLCURAND_POISSON),
+  SLANG_END_ICONST_TABLE
+};
+
 static SLang_Intrin_Var_Type Module_Variables [] =
 {
   MAKE_VARIABLE("CUDA_BLOCK_SIZE",(VOID_STAR)&SLCUDA_BLOCK_SIZE, SLANG_INT_TYPE, 0),
@@ -804,6 +971,9 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
   MAKE_INTRINSIC_0("cupow", slcuda_pow, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("cuacc", slcuda_acc, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("cusmooth", slcuda_smooth, SLANG_VOID_TYPE),
+  MAKE_INTRINSIC_0("curand_new", slcurand_new, SLANG_VOID_TYPE),
+  MAKE_INTRINSIC_0("curand_seed", slcurand_seed, SLANG_VOID_TYPE),
+  MAKE_INTRINSIC_0("curand_gen", slcurand_generate, SLANG_VOID_TYPE),
   SLANG_END_INTRIN_FUN_TABLE
 };
 
@@ -826,6 +996,18 @@ static int register_classes (void)
 
   SLcuda_Type_Id = SLclass_get_class_id (cl);
 
+  if (NULL == (cl = SLclass_allocate_class ("SLcurand_Type")))
+    return -1;
+
+  (void) SLclass_set_destroy_function (cl, slcurand_destroy);
+  
+  if (-1 == SLclass_register_class (cl, SLANG_VOID_TYPE,
+				    sizeof (SLcurand_Type),
+				    SLANG_CLASS_TYPE_MMT))
+    return -1;
+
+  SLcurand_Type_Id = SLclass_get_class_id (cl);
+
   return 0;
 }
   
@@ -841,6 +1023,7 @@ int init_cuda_module_ns (char *ns_name)
    
    if ((-1 == SLns_add_intrin_fun_table (ns, Module_Intrinsics, NULL))
        ||(-1 == SLns_add_intrin_var_table (ns, Module_Variables, NULL))
+       ||(-1 == SLns_add_iconstant_table (ns, Module_IConstants, NULL))
        )
      return -1;
    
@@ -853,4 +1036,5 @@ int init_cuda_module_ns (char *ns_name)
 
 void deinit_cuda_module (void)
 {
+
 }
