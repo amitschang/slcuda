@@ -21,7 +21,7 @@ int SLCUDA_BLOCK_SIZE=256;
 */
 __global__ void _cuda_init_dev_array (float value, float *output, int N)
 {
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
+  int i=(blockIdx.x+gridDim.x*blockIdx.y)*blockDim.x +threadIdx.x;
   if (i<N)
     output[i]=value;
 }  
@@ -204,6 +204,17 @@ __global__ void _cuda_vector_smooth (float *img, float *kernel, float *out,
       out[x]+=kernel[i]*img[idx];
   }
 }
+
+__global__ void _cuda_reduce (float *arr, float *tmp, int carry, int N)
+{
+  int x=(blockIdx.x+gridDim.x*blockIdx.y)*blockDim.x +threadIdx.x;
+  if (x>N-1)
+    return;
+  tmp[x] = arr[x]+arr[x+N];
+  if (carry==1 && x==N-1)
+    tmp[x] += arr[2*N];
+}
+
 /* 
    Now the S-Lang interaction code
  */
@@ -451,8 +462,10 @@ static void slcuda_init_dev_array (void)
 
   SLang_free_array(dims);
 
-  int n_blocks = nelems/SLCUDA_BLOCK_SIZE;
-  if ((n_blocks*nelems)<nelems) n_blocks++;
+  int block_dim = ceil(sqrt((float)nelems/(float)SLCUDA_BLOCK_SIZE));
+  dim3 n_blocks(block_dim, block_dim);
+
+  //  fprintf(stdout,"assigning array, using n_blocks=%d, block size=%d\n",n_blocks,SLCUDA_BLOCK_SIZE);
 
   if (initvalspecified)
     _cuda_init_dev_array <<< n_blocks, SLCUDA_BLOCK_SIZE >>> ((float)initval,
@@ -632,6 +645,51 @@ static void slcurand_generate (void)
    *   break;
    */
   }
+}
+
+static float slcuda_reduce (SLcuda_Type *arr)
+{
+  int p=arr->nelems;
+  int n=(arr->nelems)/2.0;
+  int carry=0;
+  int block_dim;
+  float *tmp;
+  float out;
+  void **arg;
+  cudaMalloc((void **) &tmp, n*sizeof(float));
+  arg = &arr->dptr;
+  while (n>0){
+    carry = p - 2*n;
+    block_dim = ceil(sqrt((float)n/(float)SLCUDA_BLOCK_SIZE));
+    dim3 n_blocks(block_dim, block_dim);
+    //fprintf(stdout,"on iter n=%d, p=%d, n_blocks=%d, block_size=%d\n",n,p,n_blocks,SLCUDA_BLOCK_SIZE);
+    _cuda_reduce <<< n_blocks, SLCUDA_BLOCK_SIZE >>> ((float *)*arg,
+						      (float *)tmp,
+						      carry,
+						      n);
+    arg = (void **)&tmp;
+    p=n;
+    n/=2;
+  }
+  cudaMemcpy((void *)&out, (void *)tmp, sizeof(float), cudaMemcpyDeviceToHost);
+  cudaFree((void *)tmp);
+  return out;
+}
+
+static void slcuda_call_reduce (void)
+{
+  SLang_MMT_Type *mmt;
+  SLcuda_Type *cuda;
+  float sum;
+
+  if (NULL==(mmt=SLang_pop_mmt(SLcuda_Type_Id)))
+    return;
+  if (NULL==(cuda=(SLcuda_Type *)SLang_object_from_mmt(mmt)))
+    return;
+  
+  sum = slcuda_reduce(cuda);
+  
+  SLang_push_double((double) sum);
 }
     
 static void slcuda_smooth (void)
@@ -970,6 +1028,7 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
   MAKE_INTRINSIC_0("cudiv", slcuda_div, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("cupow", slcuda_pow, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("cuacc", slcuda_acc, SLANG_VOID_TYPE),
+  MAKE_INTRINSIC_0("cusum", slcuda_call_reduce, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("cusmooth", slcuda_smooth, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("curand_new", slcurand_new, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("curand_seed", slcurand_seed, SLANG_VOID_TYPE),
