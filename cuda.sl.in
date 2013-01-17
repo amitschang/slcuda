@@ -1,15 +1,6 @@
 import("cuda");
 require("rand");
 
-%
-% these should come from the makefile variables
-%
-variable NVCC_BIN="/usr/local/cuda/bin/nvcc";
-variable NVCC_FLAGS="-shared";
-variable NVCC_C_FLAGS="-fPIC";
-variable NVCC_INC="-I/usr/local/cuda/include";
-variable NVCC_LIB="-L/usr/local/cuda/lib64";
-
 variable CURAND_DEFAULT_GEN_TYPE=CURAND_RNG_PSEUDO_DEFAULT;
 variable CURAND_DEFAULT_GEN;
 
