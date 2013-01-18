@@ -6,215 +6,89 @@
 #include <slang.h>
 SLANG_MODULE(cuda);
 
-#define CUDA_FORCE 100
 #define SLCURAND_DEFAULT 0
 #define SLCURAND_UNIFORM 1
 #define SLCURAND_NORMAL 2
 #define SLCURAND_LOGNORMAL 3
 #define SLCURAND_POISSON 4
+#define THREADIDX_X blockIdx.x * blockDim.x + threadIdx.x;
+#define THREADIDX_Y blockIdy.y * blockDim.y + threadIdy.y;
+#define THREADIDX_Z blockIdz.z * blockDim.z + threadIdz.z;
+#define THREADIDX blockIdx.z*(gridDim.x*gridDim.y)+\
+  (blockIdx.y*blockDim.y+threadIdx.y)*blockDim.x*gridDim.x+\
+  threadIdx.x+blockDim.x*blockIdx.x
 
 int SLCUDA_BLOCK_SIZE=256;
 
+int SLcuda_Type_Id = -1;
+typedef struct
+{
+  int devid;
+  int size;
+  int ndims;
+  int nelems;
+  int valid;
+  int type;
+  SLindex_Type dims[3];
+  void *dptr;
+}
+SLcuda_Type;
+
+static int SLcurand_Type_Id = -1;
+typedef struct
+{
+  curandGenerator_t gen;
+}
+SLcurand_Type;
+
+
+void slcuda_compute_dims2d(int N, int bsize, int *dx, int *dy)
+{
+  int _dy, _dx;
+  int nb = ceil((float)N/(float)bsize);
+  if (nb < 65535){
+    *dx = nb;
+    *dy = 1;
+    return;
+  }
+  _dx = nb;
+  _dy = 1;
+  while (_dx > 65535){
+    _dy+=1;
+    _dx = nb/_dy;
+  }
+  if (_dx*_dy<nb) _dx++;
+  *dy = _dy;
+  *dx = _dx;
+  fprintf(stdout,"For data size %d, computed dx=%d, dy=%d (needed %d blocks, have %d)\n",N,*dx,*dy,nb,_dy*_dx);
+}
+
 /* 
-   define a bunch of kernels to be run using global memory, as assigned
-   by the cuda array initialization code 
+   Define global kernels for initialization of arrays. These will also
+   support range arrays. For single value arrays simply set the init
+   to the value and inc to 0
 */
-__global__ void _cuda_init_dev_array (float value, float *output, int N)
+__global__ void _cuda_init_dev_arrayi (int init, int inc,
+				       int *output, int N)
 {
-  int i=(blockIdx.x+gridDim.x*blockIdx.y)*blockDim.x +threadIdx.x;
+  int i=THREADIDX;
   if (i<N)
-    output[i]=value;
+    output[i]=init+i*inc;
 }  
-__global__ void _cuda_add_cuda (float *a, float *b, float *output, int N)
+__global__ void _cuda_init_dev_arrayf (float init, float inc,
+				       float *output, int N)
 {
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i<N){
-    output[i]=a[i]+b[i];
-  }
-}
-__global__ void _cuda_sub_cuda (float *a, float *b, float *output, int N)
+  int i=THREADIDX;
+  if (i<N)
+    output[i]=init+i*inc;
+}  
+__global__ void _cuda_init_dev_arrayd (double init, double inc,
+				       double *output, int N)
 {
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i<N){
-    output[i]=a[i]-b[i];
-  }
-}
-__global__ void _cuda_mul_cuda (float *a, float *b, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i<N){
-    output[i]=a[i]*b[i];
-  }
-}
-__global__ void _cuda_div_cuda (float *a, float *b, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i<N){
-    output[i]=a[i]/b[i];
-  }
-}
-__global__ void _cuda_pow_cuda (float *a, float *b, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i<N){
-    output[i]=pow(a[i],b[i]);
-  }
-}
-__global__ void _cuda_add_scalar (float *a, float b, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i<N){
-    output[i]=a[i]+b;
-  }
-}
-__global__ void _cuda_sub_scalar (float *a, float b, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i<N){
-    output[i]=a[i]-b;
-  }
-}
-__global__ void _cuda_mul_scalar (float *a, float b, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i<N){
-    output[i]=a[i]*b;
-  }
-}
-__global__ void _cuda_div_scalar (float *a, float b, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i<N){
-    output[i]=a[i]/b;
-  }
-}
-__global__ void _cuda_pow_scalar (float *a, float b, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i<N){
-    output[i]=pow(a[i],b);
-  }
-}
-__global__ void _cuda_calc_acc3 (float *p, float *m, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i>N)
-    return;
-  // these are indeces of this threads particle
-  int x = i*3; int y = x+1; int z = x+2;
-  // variables
-  int   iix,iiy,iiz;
-  float rx,ry,rz,r,F;
-
-  // initialize output to zero force
-  output[x]=0; output[y]=0; output[z]=0;
-
-  // add up force vectors from all other particles
-  for (int ii=0; ii<N; ii++){
-    if (ii==i) continue;
-    iix = 3*ii; iiy = iix+1; iiz = iix+2;
-    rx  = p[iix]-p[x]; ry = p[iiy]-p[y]; rz = p[iiz]-p[z];
-    r   = sqrt(pow(rx,2)+pow(ry,2)+pow(rz,2));
-    F   = m[ii]/r;
-    output[x]+=F*(rx/r);
-    output[y]+=F*(ry/r);
-    output[z]+=F*(rz/r);
-  }
-}
-__global__ void _cuda_calc_acc2 (float *p, float *m, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i>N)
-    return;
-  // these are indeces of this threads particle
-  int x = i*2; int y = x+1;
-  // variables
-  int   iix,iiy;
-  float rx,ry,r,F;
-
-  // initialize output to zero force
-  output[x]=0; output[y]=0;
-
-  // add up force vectors from all other particles
-  for (int ii=0; ii<N; ii++){
-    if (ii==i) continue;
-    iix = 2*ii; iiy = iix+1;
-    rx  = p[iix]-p[x]; ry = p[iiy]-p[y];
-    r   = sqrt(pow(rx,2)+pow(ry,2));
-    F   = m[ii]/r;
-    output[x]+=F*(rx/r);
-    output[y]+=F*(ry/r);
-  }
-}
-__global__ void _cuda_calc_acc1 (float *p, float *m, float *output, int N)
-{
-  int i=blockIdx.x*blockDim.x+threadIdx.x;
-  if (i>N)
-    return;
-  // these are indeces of this threads particle
-  // initialize output to zero force
-  float rx;
-
-  output[i]=0;
-
-  // add up force vectors from all other particles
-  for (int ii=0; ii<N; ii++){
-    if (ii==i) continue;
-    rx = p[ii]-p[i];
-    output[i]+=m[ii]/copysignf(pow(rx,2),rx);
-  }
-}
-__global__ void _cuda_image_smooth (float *img, float *kernel, float *out,
-				    int kx, int ky, int stride, int N)
-{
-  int x=blockIdx.x*blockDim.x+threadIdx.x;
-  if (x>N)
-    return;
-
-  int imgx=x%stride;
-  int imgy=x/stride;
-  int idxx,idxy;
-  out[x]=0;
-  // loop over all items in kernel
-  for (int i=0;i<kx;i++){
-    for (int j=0;j<ky;j++){
-      // need to mirror if on edge
-      idxx=abs(imgx+(i-kx/2));
-      idxy=abs(imgy+(j-ky/2));
-      if (idxx >= stride)   idxx=2*stride-idxx-1;
-      if (idxy >= N/stride) idxy=2*N/stride-idxy-1;
-      out[x]+=kernel[j*kx+i]*img[idxy*stride+idxx];
-    }
-  }
-}
-__global__ void _cuda_vector_smooth (float *img, float *kernel, float *out,
-				    int kx, int N)
-{
-  int x=blockIdx.x*blockDim.x+threadIdx.x;
-  if (x>N)
-    return;
-
-  int idx;
-  out[x]=0;
-  // loop over all items in kernel
-  for (int i=0;i<kx;i++){
-      // need to mirror if on edge
-      idx=abs(x+(i-kx/2));
-      if (idx >= N) idx=2*N-idx-1;
-      out[x]+=kernel[i]*img[idx];
-  }
-}
-
-__global__ void _cuda_reduce (float *arr, float *tmp, int carry, int N)
-{
-  int x=(blockIdx.x+gridDim.x*blockIdx.y)*blockDim.x +threadIdx.x;
-  if (x>N-1)
-    return;
-  tmp[x] = arr[x]+arr[x+N];
-  if (carry==1 && x==N-1)
-    tmp[x] += arr[2*N];
-}
-
+  int i=THREADIDX;
+  if (i<N)
+    output[i]=init+i*inc;
+}  
 /* 
    Now the S-Lang interaction code
  */
@@ -311,26 +185,6 @@ static void slcuda_meminfo (void)
   SLang_push_int(total);
 }
 
-static int SLcuda_Type_Id = -1;
-typedef struct
-{
-  int devid;
-  int size;
-  int ndims;
-  int nelems;
-  int valid;
-  SLindex_Type dims[3];
-  void *dptr;
-}
-SLcuda_Type;
-
-static int SLcurand_Type_Id = -1;
-typedef struct
-{
-  curandGenerator_t gen;
-}
-SLcurand_Type;
-
 static void slcuda_cuda_info (void)
 {
   SLcuda_Type *cuda;
@@ -391,9 +245,9 @@ static void slcuda_free_intrin (void)
   cuda->valid=0;
 }
 
-static SLcuda_Type *slcuda_init_cuda(int size, int ndims, int *dims)
+SLcuda_Type *slcuda_init_cuda(int size, SLtype type, int ndims, int *dims)
 {
-  float *out;
+  void *out;
   SLcuda_Type *cuda_o=
     (SLcuda_Type *)SLmalloc(sizeof(SLcuda_Type));
   memset((char *)cuda_o,0,sizeof(SLcuda_Type));
@@ -410,8 +264,9 @@ static SLcuda_Type *slcuda_init_cuda(int size, int ndims, int *dims)
     cuda_o->nelems=(cuda_o->nelems)*dims[2];
   // malloc array on device
   cudaMalloc((void **) &out, size);
-  cuda_o->dptr=(void *)out;
+  cuda_o->dptr=out;
   cuda_o->valid=1;
+  cuda_o->type = type;
   return cuda_o;
 }
   
@@ -422,11 +277,11 @@ static void slcuda_init_array (void)
   SLang_MMT_Type *mmt;
   SLcuda_Type *cuda;
 
-  if (-1==SLang_pop_array_of_type(&arr,SLANG_FLOAT_TYPE))
+  if (-1==SLang_pop_array(&arr,0))
     return;
   
   size=(arr->sizeof_type)*(arr->num_elements);
-  cuda=slcuda_init_cuda(size, arr->num_dims, arr->dims);
+  cuda=slcuda_init_cuda(size, arr->data_type, arr->num_dims, arr->dims);
   cudaMemcpy(cuda->dptr,arr->data,size,cudaMemcpyHostToDevice);
 
   SLang_free_array(arr);
@@ -443,35 +298,78 @@ static void slcuda_init_dev_array (void)
   SLang_Array_Type *dims;
   SLang_MMT_Type *mmt;
   SLcuda_Type *cuda;
+  SLtype type;
   double initval;
+  double inc=0;
   int initvalspecified=0;
   int nelems=1;
+  int size;
 
-  if (2==SLang_Num_Function_Args){
+  if (4==SLang_Num_Function_Args){
+    SLang_pop_double(&inc);
     SLang_pop_double(&initval);
     initvalspecified=1;
+    SLang_pop_datatype(&type);
+  }    
+  else if (3==SLang_Num_Function_Args){
+    SLang_pop_double(&initval);
+    initvalspecified=1;
+    SLang_pop_datatype(&type);
   }
-  
+  else if (2==SLang_Num_Function_Args){
+    SLang_pop_datatype(&type);
+  }
+  else {
+    type=SLANG_FLOAT_TYPE;
+  }
+
   if (-1==SLang_pop_array_of_type(&dims,SLANG_INT_TYPE))
     return;
   
   for (int i=0;i<dims->num_elements;i++)
     nelems=nelems*((int *)dims->data)[i];
 
-  cuda=slcuda_init_cuda(nelems*sizeof(float),dims->num_elements,(int *)dims->data);
+  switch (type){
+  case SLANG_INT_TYPE:    size=sizeof(int); break;
+  case SLANG_FLOAT_TYPE:  size=sizeof(float); break;
+  case SLANG_DOUBLE_TYPE: size=sizeof(double); break;
+  }
+
+  cuda=slcuda_init_cuda(nelems*size,type,dims->num_elements,(int *)dims->data);
 
   SLang_free_array(dims);
 
-  int block_dim = ceil(sqrt((float)nelems/(float)SLCUDA_BLOCK_SIZE));
-  dim3 n_blocks(block_dim, block_dim);
 
-  //  fprintf(stdout,"assigning array, using n_blocks=%d, block size=%d\n",n_blocks,SLCUDA_BLOCK_SIZE);
+  if (initvalspecified){
+    int bdx, bdy;
+    slcuda_compute_dims2d( nelems, SLCUDA_BLOCK_SIZE, &bdx, &bdy);
+    dim3 n_blocks(bdx, bdy);
 
-  if (initvalspecified)
-    _cuda_init_dev_array <<< n_blocks, SLCUDA_BLOCK_SIZE >>> ((float)initval,
-							      (float *)cuda->dptr,
-							      nelems);
-  
+    switch (type){
+    case SLANG_INT_TYPE:
+      _cuda_init_dev_arrayi <<< 
+	n_blocks, SLCUDA_BLOCK_SIZE
+			    >>> ((int)initval, (int)inc,
+				 (int *)cuda->dptr,
+				 nelems);
+      break;
+    case SLANG_FLOAT_TYPE:
+      _cuda_init_dev_arrayf <<< 
+	n_blocks, SLCUDA_BLOCK_SIZE
+			    >>> ((float)initval,(float)inc,
+				 (float *)cuda->dptr,
+				 nelems);
+      break;
+    case SLANG_DOUBLE_TYPE:
+      _cuda_init_dev_arrayd <<< 
+	n_blocks, SLCUDA_BLOCK_SIZE
+			    >>> ((double)initval,(double)inc,
+				 (double *)cuda->dptr,
+				 nelems);
+      break;
+    }
+  }
+
   mmt=SLang_create_mmt(SLcuda_Type_Id,(VOID_STAR) cuda);
 
   if (0==SLang_push_mmt(mmt)){
@@ -486,7 +384,7 @@ static void slcuda_fetch_array (void)
   SLang_Array_Type *arr;
   SLang_MMT_Type *mmt;
   SLcuda_Type *cuda;
-  float *darr;
+  void *darr;
 
   mmt=SLang_pop_mmt(SLcuda_Type_Id);
 
@@ -496,11 +394,11 @@ static void slcuda_fetch_array (void)
   if (NULL==(cuda=(SLcuda_Type *)SLang_object_from_mmt(mmt)))
     return;
 
-  darr = (float *)SLmalloc(cuda->size);
+  darr = SLmalloc(cuda->size);
 
   cudaMemcpy(darr,cuda->dptr,cuda->size,cudaMemcpyDeviceToHost);
 
-  if (NULL==(arr=SLang_create_array(SLANG_FLOAT_TYPE,0,(VOID_STAR) darr,
+  if (NULL==(arr=SLang_create_array(cuda->type,0,(VOID_STAR) darr,
 				    cuda->dims, cuda->ndims))){
     SLfree((char *)darr);
     return;
@@ -626,369 +524,29 @@ static void slcurand_generate (void)
     ret = curandGenerate(gen->gen, (unsigned int *)cuda->dptr, cuda->nelems);
     break;
   case SLCURAND_UNIFORM:
-    ret = curandGenerateUniform(gen->gen, (float *)cuda->dptr, cuda->nelems);
+    if (cuda->type == SLANG_DOUBLE_TYPE)
+      ret = curandGenerateUniformDouble(gen->gen, (double *)cuda->dptr, cuda->nelems);
+    else
+      ret = curandGenerateUniform(gen->gen, (float *)cuda->dptr, cuda->nelems);
     break;
   case SLCURAND_NORMAL:
-    ret = curandGenerateNormal(gen->gen, (float *)cuda->dptr, cuda->nelems,
-			       (float)arg1, (float)arg2);
+    if (cuda->type == SLANG_DOUBLE_TYPE)
+      ret = curandGenerateNormalDouble(gen->gen, (double *)cuda->dptr, cuda->nelems,
+				       (double)arg1, (double)arg2);
+    else
+      ret = curandGenerateNormal(gen->gen, (float *)cuda->dptr, cuda->nelems,
+				 (float)arg1, (float)arg2);
     break;
   case SLCURAND_LOGNORMAL:
-    ret = curandGenerateNormal(gen->gen, (float *)cuda->dptr, cuda->nelems,
-			       (float)arg1, (float)arg2);
-    break;
-  /* 
-   * Seems not available in my version...
-   *
-   * case SLCURAND_POISSON:
-   *   ret = curandGeneratePoisson(*gen, cuda->dptr, cuda->nelems,
-   * 				(float)arg1);
-   *   break;
-   */
-  }
-}
-
-static float slcuda_reduce (SLcuda_Type *arr)
-{
-  int p=arr->nelems;
-  int n=(arr->nelems)/2.0;
-  int carry=0;
-  int block_dim;
-  float *tmp;
-  float out;
-  void **arg;
-  cudaMalloc((void **) &tmp, n*sizeof(float));
-  arg = &arr->dptr;
-  while (n>0){
-    carry = p - 2*n;
-    block_dim = ceil(sqrt((float)n/(float)SLCUDA_BLOCK_SIZE));
-    dim3 n_blocks(block_dim, block_dim);
-    //fprintf(stdout,"on iter n=%d, p=%d, n_blocks=%d, block_size=%d\n",n,p,n_blocks,SLCUDA_BLOCK_SIZE);
-    _cuda_reduce <<< n_blocks, SLCUDA_BLOCK_SIZE >>> ((float *)*arg,
-						      (float *)tmp,
-						      carry,
-						      n);
-    arg = (void **)&tmp;
-    p=n;
-    n/=2;
-  }
-  cudaMemcpy((void *)&out, (void *)tmp, sizeof(float), cudaMemcpyDeviceToHost);
-  cudaFree((void *)tmp);
-  return out;
-}
-
-static void slcuda_call_reduce (void)
-{
-  SLang_MMT_Type *mmt;
-  SLcuda_Type *cuda;
-  float sum;
-
-  if (NULL==(mmt=SLang_pop_mmt(SLcuda_Type_Id)))
-    return;
-  if (NULL==(cuda=(SLcuda_Type *)SLang_object_from_mmt(mmt)))
-    return;
-  
-  sum = slcuda_reduce(cuda);
-  
-  SLang_push_double((double) sum);
-}
-    
-static void slcuda_smooth (void)
-{
-  SLang_MMT_Type *mmt_img;
-  SLang_MMT_Type *mmt_kernel;
-  SLang_MMT_Type *mmt_o;
-  SLcuda_Type *cuda_img;
-  SLcuda_Type *cuda_kernel;
-  SLcuda_Type *cuda_o;
-
-  // if we are given three args, then the output goes to that cuda
-  // object
-  if (3==SLang_Num_Function_Args){
-    if (NULL==(mmt_o=SLang_pop_mmt(SLcuda_Type_Id)))
-      return;
-    if (NULL==(cuda_o=(SLcuda_Type *)SLang_object_from_mmt(mmt_o)))
-      return;
-  }
-  // get image and kernel
-  if (NULL==(mmt_kernel=SLang_pop_mmt(SLcuda_Type_Id)))
-    return;
-  if (NULL==(mmt_img=SLang_pop_mmt(SLcuda_Type_Id)))
-    return;
-  if (NULL==(cuda_img=(SLcuda_Type *)SLang_object_from_mmt(mmt_img)))
-    return;
-  if (NULL==(cuda_kernel=(SLcuda_Type *)SLang_object_from_mmt(mmt_kernel)))
-      return;
-  // Image and kernel should be no more than 2d and kernel needs to be
-  // odd by odd dimensions
-  if (0==cuda_kernel->dims[0]%2||
-      2<cuda_kernel->ndims||
-      2<cuda_img->ndims){
-    printf("Wrong dimensions for smoothing\n");
-    return;
-  }
-  if (2==cuda_kernel->ndims&&
-      0==cuda_kernel->dims[1]%2){
-    printf("kernel 2nd dimention is not odd\n");
-    return;
-  }
-
-  if (3!=SLang_Num_Function_Args){
-    cuda_o=slcuda_init_cuda(cuda_img->size,cuda_img->ndims,cuda_img->dims);
-  }
-
-  int n_blocks=cuda_img->nelems/SLCUDA_BLOCK_SIZE;
-  if (n_blocks*SLCUDA_BLOCK_SIZE<cuda_img->nelems)
-    n_blocks++;
-
-  // should handle 1 or 2 dimensions here
-  if (2==cuda_img->ndims)
-    _cuda_image_smooth <<< n_blocks, SLCUDA_BLOCK_SIZE >>> ((float *)cuda_img->dptr,
-							    (float *)cuda_kernel->dptr,
-							    (float *)cuda_o->dptr,
-							    cuda_kernel->dims[0],
-							    cuda_kernel->dims[1],
-							    cuda_img->dims[1],
-							    cuda_img->nelems);
-  else
-    _cuda_vector_smooth <<< n_blocks, SLCUDA_BLOCK_SIZE >>> ((float *)cuda_img->dptr,
-							     (float *)cuda_kernel->dptr,
-							     (float *)cuda_o->dptr,
-							     cuda_kernel->dims[0],
-							     cuda_img->nelems);
-    
-
-  if (3!=SLang_Num_Function_Args){
-    mmt_o=SLang_create_mmt(SLcuda_Type_Id,(VOID_STAR) cuda_o);
-
-    if (0==SLang_push_mmt(mmt_o)){
-      return;
-    }
-  
-    SLang_free_mmt(mmt_o);
-  }
-}
-
-static void slcuda_do_binary_op(SLcuda_Type *a, SLcuda_Type *b, SLcuda_Type *o, int op)
-{
-  void (*func)(float *,float *,float *,int);
-
-  int block_size=SLCUDA_BLOCK_SIZE;
-  int n_blocks=a->nelems/block_size;
-  if (n_blocks*block_size<a->nelems)
-    n_blocks++;
-  int N=a->nelems;
-
-  switch (op){
-  case SLANG_PLUS:
-    func=&_cuda_add_cuda;
-    break;
-  case SLANG_MINUS:
-    func=&_cuda_sub_cuda;
-    break;
-  case SLANG_TIMES:
-    func=&_cuda_mul_cuda;
-    break;
-  case SLANG_DIVIDE:
-    func=&_cuda_mul_cuda;
-    break;
-  case SLANG_POW:
-    func=&_cuda_pow_cuda;
-    break;
-  case CUDA_FORCE:
-    if (a->dims[1]==3)
-      func=&_cuda_calc_acc3;
-    else if (a->dims[1]==2)
-      func=&_cuda_calc_acc2;
-    else if (a->dims[1]==1)
-      func=&_cuda_calc_acc1;
-    n_blocks=(a->nelems/a->ndims)/block_size;
-    if (n_blocks*block_size<(a->nelems/a->dims[1]))
-      n_blocks++;
-    N=a->nelems/a->dims[1];
+    if (cuda->type == SLANG_DOUBLE_TYPE)
+      ret = curandGenerateLogNormalDouble(gen->gen, (double *)cuda->dptr, cuda->nelems,
+					  (double)arg1, (double)arg2);
+    else
+      ret = curandGenerateLogNormal(gen->gen, (float *)cuda->dptr, cuda->nelems,
+				    (float)arg1, (float)arg2);
     break;
   }
-
-  func <<< n_blocks, block_size >>> ((float *)(a->dptr),
-				     (float *)(b->dptr),
-				     (float *)(o->dptr),
-				     N);
-}
-
-static void slcuda_do_binary_op_scalar(SLcuda_Type *a, float b, SLcuda_Type *o, int op)
-{
-  void (*func)(float *, float, float *,int);
-
-  int block_size=SLCUDA_BLOCK_SIZE;
-  int n_blocks=a->nelems/block_size;
-  if (n_blocks*block_size<a->nelems)
-    n_blocks++;
-
-  switch (op){
-  case SLANG_PLUS:
-    func=&_cuda_add_scalar;
-    break;
-  case SLANG_MINUS:
-    func=&_cuda_sub_scalar;
-    break;
-  case SLANG_TIMES:
-    func=&_cuda_mul_scalar;
-    break;
-  case SLANG_DIVIDE:
-    func=&_cuda_mul_scalar;
-    break;
-  case SLANG_POW:
-    func=&_cuda_pow_scalar;
-    break;
-  }
-
-  func <<< n_blocks, block_size >>> ((float *)(a->dptr),b,
-				     (float *)(o->dptr),
-				     a->nelems);
-}
-
-static void slcuda_binary_op (int op)
-{
-  SLang_MMT_Type *mmt_a;
-  SLang_MMT_Type *mmt_b;
-  SLang_MMT_Type *mmt_o;
-  SLcuda_Type *cuda_a;
-  SLcuda_Type *cuda_b;
-  SLcuda_Type *cuda_o;
-  SLtype intype;
-  float scalararg;
-  int scalar=0;
-
-  // if we are given three args, then the output goes to that cuda
-  // object
-  if (3==SLang_Num_Function_Args){
-    if (NULL==(mmt_o=SLang_pop_mmt(SLcuda_Type_Id)))
-      return;
-    if (NULL==(cuda_o=(SLcuda_Type *)SLang_object_from_mmt(mmt_o)))
-      return;
-  }
-  // other args can be scalar or cuda type
-  intype=SLang_peek_at_stack();
-  if (SLANG_INT_TYPE==intype||
-      SLANG_FLOAT_TYPE==intype||
-      SLANG_DOUBLE_TYPE==intype)
-    {
-      scalar=1;
-      SLang_pop_float(&scalararg);
-      if (NULL==(mmt_a=SLang_pop_mmt(SLcuda_Type_Id)))
-	return;
-    }
-  else {
-    if (NULL==(mmt_b=SLang_pop_mmt(SLcuda_Type_Id)))
-      return;
-    
-    intype=SLang_peek_at_stack();
-    if (SLANG_INT_TYPE==intype||
-	SLANG_FLOAT_TYPE==intype||
-	SLANG_DOUBLE_TYPE==intype)
-      {
-	scalar=1;
-	SLang_pop_float(&scalararg);
-      }
-    else {
-      if (NULL==(mmt_a=SLang_pop_mmt(SLcuda_Type_Id)))
-	return;
-    }
-  }
-
-  if (NULL==(cuda_a=(SLcuda_Type *)SLang_object_from_mmt(mmt_a)))
-    return;
-
-  if (0==scalar){
-    if (NULL==(cuda_b=(SLcuda_Type *)SLang_object_from_mmt(mmt_b)))
-      return;
-  }
-  
-  if (3!=SLang_Num_Function_Args){
-    cuda_o=slcuda_init_cuda(cuda_a->size,cuda_a->ndims,cuda_a->dims);
-  }
-  if (1==scalar){
-    slcuda_do_binary_op_scalar(cuda_a,scalararg,cuda_o,op);
-  }
-  else {
-    slcuda_do_binary_op(cuda_a,cuda_b,cuda_o,op);
-  }
-
-  if (3!=SLang_Num_Function_Args){
-    mmt_o=SLang_create_mmt(SLcuda_Type_Id,(VOID_STAR) cuda_o);
-
-    if (0==SLang_push_mmt(mmt_o)){
-      return;
-    }
-  
-    SLang_free_mmt(mmt_o);
-  }
-}
-
-static void slcuda_add (void)
-{
-  slcuda_binary_op(SLANG_PLUS);
-}
-
-static void slcuda_sub (void)
-{
-  slcuda_binary_op(SLANG_MINUS);
-}
-
-static void slcuda_mul (void)
-{
-  slcuda_binary_op(SLANG_TIMES);
-}
-
-static void slcuda_div (void)
-{
-  slcuda_binary_op(SLANG_DIVIDE);
-}
-static void slcuda_pow (void)
-{
-  slcuda_binary_op(SLANG_POW);
-}
-static void slcuda_acc (void)
-{
-  slcuda_binary_op(CUDA_FORCE);
-}
-
-static int slcuda_bin_op_result (int op, SLtype a, SLtype b, SLtype *c)
-{
-  (void) op;
-  (void) a;
-  (void) b;
-  *c = (SLtype)SLcuda_Type_Id;
-  return 1;
-}
-
-static int slcuda_bin_op_op (int op, SLtype a_type, VOID_STAR ap, SLuindex_Type na,
-			     SLtype b_type, VOID_STAR bp, SLuindex_Type nb,
-			     VOID_STAR cp)
-{
-  SLcuda_Type *res;
-  SLcuda_Type *in1, *in2;
-  SLang_MMT_Type *mmt;
-  
-  if (NULL==(in1=(SLcuda_Type *)SLang_object_from_mmt(*(SLang_MMT_Type **)ap)))
-    return 0;
-  if (NULL==(in2=(SLcuda_Type *)SLang_object_from_mmt(*(SLang_MMT_Type **)bp)))
-    return 0;
-
-  res=slcuda_init_cuda(in1->size,in1->ndims,in1->dims);
-
-  switch (op){
-  case SLANG_PLUS:
-    slcuda_do_binary_op(in1,in2,res,SLANG_PLUS);
-    break;
-  default:
-    return 0;
-  }
-
-  if (NULL==(mmt=SLang_create_mmt(SLcuda_Type_Id,(VOID_STAR)res)))
-    return 0;
-
-  *(SLang_MMT_Type **)cp=mmt;
-  return 1;
+  SLang_push_int(ret);
 }
 
 static SLang_IConstant_Type Module_IConstants [] =
@@ -1022,14 +580,6 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] =
   MAKE_INTRINSIC_0("cuarr", slcuda_init_dev_array, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("cufree", slcuda_free_intrin, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("cuget", slcuda_fetch_array, SLANG_VOID_TYPE),
-  MAKE_INTRINSIC_0("cuadd", slcuda_add, SLANG_VOID_TYPE),
-  MAKE_INTRINSIC_0("cusub", slcuda_sub, SLANG_VOID_TYPE),
-  MAKE_INTRINSIC_0("cumul", slcuda_mul, SLANG_VOID_TYPE),
-  MAKE_INTRINSIC_0("cudiv", slcuda_div, SLANG_VOID_TYPE),
-  MAKE_INTRINSIC_0("cupow", slcuda_pow, SLANG_VOID_TYPE),
-  MAKE_INTRINSIC_0("cuacc", slcuda_acc, SLANG_VOID_TYPE),
-  MAKE_INTRINSIC_0("cusum", slcuda_call_reduce, SLANG_VOID_TYPE),
-  MAKE_INTRINSIC_0("cusmooth", slcuda_smooth, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("curand_new", slcurand_new, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("curand_seed", slcurand_seed, SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("curand_gen", slcurand_generate, SLANG_VOID_TYPE),
@@ -1086,14 +636,9 @@ int init_cuda_module_ns (char *ns_name)
        )
      return -1;
    
-   if (-1 == SLclass_add_binary_op (SLcuda_Type_Id, SLcuda_Type_Id,
-				    slcuda_bin_op_op, slcuda_bin_op_result))
-     return -1;
-   
    return 0;
 }
 
 void deinit_cuda_module (void)
 {
-
 }
