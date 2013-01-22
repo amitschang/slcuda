@@ -6,6 +6,11 @@
 #include <slang.h>
 SLANG_MODULE(cuda);
 
+#if __CUDA_ARCH__ >= 300
+ #define SLCUDA_MAX_GRID_DIM 65535
+#else
+ #define SLCUDA_MAX_GRID_DIM 4294967295
+#endif
 #define SLCURAND_DEFAULT 0
 #define SLCURAND_UNIFORM 1
 #define SLCURAND_NORMAL 2
@@ -46,21 +51,39 @@ void slcuda_compute_dims2d(int N, int bsize, int *dx, int *dy)
 {
   int _dy, _dx;
   int nb = ceil((float)N/(float)bsize);
-  if (nb < 65535){
+  if (nb < SLCUDA_MAX_GRID_DIM){
     *dx = nb;
     *dy = 1;
     return;
   }
   _dx = nb;
   _dy = 1;
-  while (_dx > 65535){
+  while (_dx > SLCUDA_MAX_GRID_DIM){
     _dy+=1;
     _dx = nb/_dy;
   }
   if (_dx*_dy<nb) _dx++;
   *dy = _dy;
   *dx = _dx;
-  fprintf(stdout,"For data size %d, computed dx=%d, dy=%d (needed %d blocks, have %d)\n",N,*dx,*dy,nb,_dy*_dx);
+}
+
+SLcuda_Type *slcuda_pop_cuda(void){
+  SLang_MMT_Type *mmt;
+  SLcuda_Type *cuda;
+  if (NULL==(mmt=SLang_pop_mmt(SLcuda_Type_Id)))
+    return NULL;
+  if (NULL==(cuda=(SLcuda_Type *)SLang_object_from_mmt(mmt)))
+    return NULL;
+  return cuda;
+}
+
+int slcuda_push_cuda(SLcuda_Type *cuda){
+  SLang_MMT_Type *mmt;
+  mmt=SLang_create_mmt(SLcuda_Type_Id,(VOID_STAR) cuda);
+  if (0==SLang_push_mmt(mmt))
+    return 0;
+  SLang_free_mmt(mmt);
+  return 1;
 }
 
 /* 
@@ -162,14 +185,8 @@ static void slcuda_device_info (void)
 {
   int devid=0;
   cudaDeviceProp devprops;
-  
-  if (0==slcuda_check_device_presence())
-    {
-      SLang_push_int(0);
-      return;
-    }
-  
-  SLang_pop_int(&devid);
+  if (1==SLang_Num_Function_Args)
+    SLang_pop_int(&devid);
   if (cudaSuccess==cudaGetDeviceProperties(&devprops,devid))
     SLang_push_cstruct(&devprops,SLcuda_Device_Struct);
 }
@@ -178,7 +195,7 @@ static void slcuda_meminfo (void)
 {
   int devid=0;
   size_t free,total;
-  if (SLANG_INT_TYPE==SLang_peek_at_stack())
+  if (1==SLang_Num_Function_Args)
     SLang_pop_int(&devid);
   cudaMemGetInfo(&free,&total);
   SLang_push_int(free);
@@ -188,15 +205,10 @@ static void slcuda_meminfo (void)
 static void slcuda_cuda_info (void)
 {
   SLcuda_Type *cuda;
-  SLang_MMT_Type *mmt;
 
-  if (NULL==(mmt=SLang_pop_mmt(SLcuda_Type_Id)))
+  if (NULL==(cuda=slcuda_pop_cuda()))
     return;
 
-  if (NULL==(cuda=(SLcuda_Type *)SLang_object_from_mmt(mmt)))
-    return;
-
-  printf("mmt object at %p\n",mmt);
   printf("cuda object at %p\n",cuda);
 
   if (0==cuda->valid){
@@ -273,9 +285,8 @@ SLcuda_Type *slcuda_init_cuda(int size, SLtype type, int ndims, int *dims)
 static void slcuda_init_array (void)
 {
   SLang_Array_Type *arr;
-  int size;
-  SLang_MMT_Type *mmt;
   SLcuda_Type *cuda;
+  int size;
 
   if (-1==SLang_pop_array(&arr,0))
     return;
@@ -285,18 +296,12 @@ static void slcuda_init_array (void)
   cudaMemcpy(cuda->dptr,arr->data,size,cudaMemcpyHostToDevice);
 
   SLang_free_array(arr);
-  mmt=SLang_create_mmt(SLcuda_Type_Id,(VOID_STAR) cuda);
-
-  if (0==SLang_push_mmt(mmt))
-    return;
-
-  SLang_free_mmt(mmt);
+  slcuda_push_cuda(cuda);
 }
 
 static void slcuda_init_dev_array (void)
 {
   SLang_Array_Type *dims;
-  SLang_MMT_Type *mmt;
   SLcuda_Type *cuda;
   SLtype type;
   double initval;
@@ -370,33 +375,45 @@ static void slcuda_init_dev_array (void)
     }
   }
 
-  mmt=SLang_create_mmt(SLcuda_Type_Id,(VOID_STAR) cuda);
-
-  if (0==SLang_push_mmt(mmt)){
-    return;
-  }
-  
-  SLang_free_mmt(mmt);
+  slcuda_push_cuda(cuda);
 }
 
 static void slcuda_fetch_array (void)
 {
   SLang_Array_Type *arr;
-  SLang_MMT_Type *mmt;
   SLcuda_Type *cuda;
   void *darr;
 
-  mmt=SLang_pop_mmt(SLcuda_Type_Id);
 
-  if (NULL==mmt)
+  if (2==SLang_Num_Function_Args)
+    if (-1==SLang_pop_array(&arr,0))
+      return;
+  
+  if (NULL==(cuda=slcuda_pop_cuda()))
     return;
 
-  if (NULL==(cuda=(SLcuda_Type *)SLang_object_from_mmt(mmt)))
-    return;
-
-  darr = SLmalloc(cuda->size);
+  if (2==SLang_Num_Function_Args){
+    if (arr->data_type != cuda->type ||
+	arr->num_elements != cuda->nelems){
+      SLang_push_int(0);
+      SLang_free_array(arr);
+      return;
+    }
+    else {
+      darr = arr->data;
+    }
+  }
+  else {
+    darr = SLmalloc(cuda->size);
+  }
 
   cudaMemcpy(darr,cuda->dptr,cuda->size,cudaMemcpyDeviceToHost);
+
+  if (2==SLang_Num_Function_Args){
+    SLang_push_int(1);
+    SLang_free_array(arr);
+    return;
+  }
 
   if (NULL==(arr=SLang_create_array(cuda->type,0,(VOID_STAR) darr,
 				    cuda->dims, cuda->ndims))){
@@ -490,7 +507,6 @@ static void slcurand_generate (void)
 {
   SLang_MMT_Type *mmt_g;
   SLcurand_Type *gen;
-  SLang_MMT_Type *mmt_c;
   SLcuda_Type *cuda;
   int type;
   double arg1,arg2;
@@ -506,12 +522,10 @@ static void slcurand_generate (void)
     if (-1==SLang_pop_double(&arg1))
       return;
   }
-  if (NULL==(mmt_c=SLang_pop_mmt(SLcuda_Type_Id)))
-    return;
-  if (NULL==(mmt_g=SLang_pop_mmt(SLcurand_Type_Id)))
+  if (NULL==(cuda=slcuda_pop_cuda()))
     return;
 
-  if (NULL==(cuda=(SLcuda_Type *)SLang_object_from_mmt(mmt_c)))
+  if (NULL==(mmt_g=SLang_pop_mmt(SLcurand_Type_Id)))
     return;
   if (NULL==(gen=(SLcurand_Type *)SLang_object_from_mmt(mmt_g)))
     return;
@@ -623,6 +637,9 @@ static int register_classes (void)
 int init_cuda_module_ns (char *ns_name)
 {
    SLang_NameSpace_Type *ns;
+
+   if (!slcuda_check_device_presence())
+     return -1;
 
    if (NULL == (ns = SLns_create_namespace (ns_name)))
      return -1;

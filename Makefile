@@ -1,6 +1,6 @@
 PREFIX=/usr/local
 NVCC = /usr/local/cuda/bin/nvcc
-NVFLAGS = -shared
+NVFLAGS = -shared -arch sm_10
 CFLAGS = -fPIC
 INC = -I/usr/local/cuda/include
 LIB = -L/usr/local/cuda/lib64

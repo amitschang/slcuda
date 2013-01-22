@@ -104,12 +104,9 @@ define cuda_add_function(name, kernel){
     ()=fputs("static void handler (void)\n{\n",fp);
     for (i=length(input_types)-1;i>=0;i--){
 	if (input_types[i]==SLcuda_Type){
-	    ()=fprintf(fp,"SLang_MMT_Type *mmt_%d;\n",i);
 	    ()=fprintf(fp,"SLcuda_Type *cuda_%d;\n",i);
 	    ()=fprintf(fp,"%s *arg_%d;\n",data_types[i],i);
-	    ()=fprintf(fp,"if(NULL==(mmt_%d=SLang_pop_mmt(SLcuda_Type_Id))){ return; }\n",i);
-	    ()=fprintf(fp,"if(NULL==(cuda_%d=",i);
-	    ()=fprintf(fp,"(SLcuda_Type *)SLang_object_from_mmt(mmt_%d))){ return; }\n",i);
+	    ()=fprintf(fp,"if (NULL==(cuda_%d=slcuda_pop_cuda())){return;}",i);
 	    ()=fprintf(fp,"arg_%d=(%s *)cuda_%d->dptr;\n",i,data_types[i],i);
 	    n=i;
 	}
