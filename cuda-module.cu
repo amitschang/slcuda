@@ -6,15 +6,6 @@
 #include <slang.h>
 SLANG_MODULE(cuda);
 
-#if __CUDA_ARCH__ < 300
- #define SLCUDA_MAX_GRID_DIM 65535
-#else
- #define SLCUDA_MAX_GRID_DIM 4294967295
-#endif
-#define SLCUDA_NO_DOUBLE 1
-#if __CUDA_ARCH__ >= 130
- #define SLCUDA_NO_DOUBLE 0
-#endif
 #define SLCURAND_DEFAULT 0
 #define SLCURAND_UNIFORM 1
 #define SLCURAND_NORMAL 2
@@ -27,6 +18,8 @@ SLANG_MODULE(cuda);
   (blockIdx.y*blockDim.y+threadIdx.y)*blockDim.x*gridDim.x+\
   threadIdx.x+blockDim.x*blockIdx.x
 
+static long SLCUDA_MAX_GRID_DIM=65535; //default based on compute arch
+static int  SLCUDA_NO_DOUBLE=1;        //which is low. realtime query
 int SLCUDA_BLOCK_SIZE=256;
 
 int SLcuda_Type_Id = -1;
@@ -185,6 +178,7 @@ static SLang_CStruct_Field_Type SLcuda_Device_Struct [] =
     SLANG_END_CSTRUCT_TABLE
   };
 
+
 static void slcuda_device_info (void)
 {
   int devid=0;
@@ -193,6 +187,13 @@ static void slcuda_device_info (void)
     SLang_pop_int(&devid);
   if (cudaSuccess==cudaGetDeviceProperties(&devprops,devid))
     SLang_push_cstruct(&devprops,SLcuda_Device_Struct);
+}
+
+static int slcuda_get_compute_capability (int devid){
+  cudaDeviceProp devprops;
+  if (cudaSuccess==cudaGetDeviceProperties(&devprops,devid))
+    return 10*(10*(&devprops)->major+(&devprops)->minor);
+  return -1;
 }
 
 static void slcuda_meminfo (void)
@@ -655,6 +656,12 @@ int init_cuda_module_ns (char *ns_name)
 
    if (!slcuda_check_device_presence())
      return -1;
+
+   int compcap=slcuda_get_compute_capability(0); // of default device
+   if (compcap >= 130)
+     SLCUDA_NO_DOUBLE=0; //above 130 double is supported
+   if (compcap >= 300)
+     SLCUDA_MAX_GRID_DIM=4294967295; //kepler supports large grid sizes
 
    if (NULL == (ns = SLns_create_namespace (ns_name)))
      return -1;
