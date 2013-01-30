@@ -6,10 +6,14 @@
 #include <slang.h>
 SLANG_MODULE(cuda);
 
-#if __CUDA_ARCH__ >= 300
+#if __CUDA_ARCH__ < 300
  #define SLCUDA_MAX_GRID_DIM 65535
 #else
  #define SLCUDA_MAX_GRID_DIM 4294967295
+#endif
+#define SLCUDA_NO_DOUBLE 1
+#if __CUDA_ARCH__ >= 130
+ #define SLCUDA_NO_DOUBLE 0
 #endif
 #define SLCURAND_DEFAULT 0
 #define SLCURAND_UNIFORM 1
@@ -290,6 +294,12 @@ static void slcuda_init_array (void)
 
   if (-1==SLang_pop_array(&arr,0))
     return;
+
+  if (SLCUDA_NO_DOUBLE &&
+      arr->data_type == SLANG_DOUBLE_TYPE){
+    SLang_verror(SL_USAGE_ERROR, "double not supported on this GPU");
+    return;
+  }
   
   size=(arr->sizeof_type)*(arr->num_elements);
   cuda=slcuda_init_cuda(size, arr->data_type, arr->num_dims, arr->dims);
@@ -323,6 +333,11 @@ static void slcuda_init_dev_array (void)
   }
   else if (2==SLang_Num_Function_Args){
     SLang_pop_datatype(&type);
+    if (SLCUDA_NO_DOUBLE &&
+	type == SLANG_DOUBLE_TYPE){
+      SLang_verror(SL_USAGE_ERROR, "double not supported on this GPU");
+      return;
+    }
   }
   else {
     type=SLANG_FLOAT_TYPE;
