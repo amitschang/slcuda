@@ -334,14 +334,15 @@ static void slcuda_init_dev_array (void)
   }
   else if (2==SLang_Num_Function_Args){
     SLang_pop_datatype(&type);
-    if (SLCUDA_NO_DOUBLE &&
-	type == SLANG_DOUBLE_TYPE){
-      SLang_verror(SL_USAGE_ERROR, "double not supported on this GPU");
-      return;
-    }
   }
   else {
     type=SLANG_FLOAT_TYPE;
+  }
+
+  if (SLCUDA_NO_DOUBLE &&
+      type == SLANG_DOUBLE_TYPE){
+    SLang_verror(SL_USAGE_ERROR, "double not supported on this GPU");
+    return;
   }
 
   if (-1==SLang_pop_array_of_type(&dims,SLANG_INT_TYPE))
