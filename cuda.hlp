@@ -4,12 +4,14 @@ cunew
   Load an array into device memory
 
  USAGE
-  SLcuda_Type = cunew(Double_Type arr[])
+  SLcuda_Type = cunew(arr[])
 
  DESCRIPTION 
   Load the array in `arr' into the currently selected GPU device
   memory. The object returned is of SLcuda_Type which can be used as
-  arguments to device kernel functions.
+  arguments to device kernel functions. The types supported currently
+  for arr are one of Int_Type, Float_Type, or Double_Type (not
+  supported on all GPUs)
 
  SEE ALSO
   cuarr, cuget
@@ -22,19 +24,27 @@ cuarr
   initialize an empty (or single valued) array on device
 
  USAGE
-  SLcuda_Type cuarr(Int_Type dimensions[] [, Double_Type initval])
+  SLcuda_Type cuarr(Int_Type dimensions[] [, DataType_Type type [, initval [,step]]])
 
  DESCRIPTION
   Create an array on selected GPU device. The first argument
   `dimensions' is an array of lenght N_dimensions that gives the
   length of each dimension. The second argument, if specified, gives
-  the inital value of the array. If unspecified, the initial value
-  will be junk (not 0).
+  the data type of the on device array, otherwise this defaults to
+  float type. If the third argument is given and not the fourth, that
+  value will be used to initialize the array. If both the third and
+  fourth argument are given, the third specifies the value of the
+  zeroth element, and the fourth the increment from one element to the
+  next (e.g. a range array).
 
  EXAMPLE
   create a 1024x1024 element array, initialized to 0:
 
    image = cuarr([1024,1024],0.0);
+
+  create a range array of integers from 0 to 999:
+
+   range = cuarr([1000], Int_Type, 0, 1);
 
  SEE ALSO
   cunew, cuget
@@ -51,10 +61,11 @@ cuget
 
  DESCRIPTION
   Retrieve a device array specified by `x' back to main memory. This
-  function essentially performs the oppisite function of cunew or
+  function essentially performs the opposite function of cunew or
   cuarr, and is required to make use of computations done on the
-  device. The returned array will have dimensions as specified in the
-  cunew or cuarr.
+  device. The returned array will have dimensions and type as
+  specified in the cunew or cuarr. This function also necessarily
+  causes device synchronization of the currently selected GPU.
 
  SEE ALSO
   cunew, cuarr
@@ -99,6 +110,12 @@ cuda_add_function
   first SLcuda_Type argument. This will not be an argument passed to
   the SLang function, but must appear in the kernel (even if not
   used).
+
+  The data types used in the function will be derived from those in
+  the kernel definition. Any argument with a pointer value (e.g. float
+  *arg) will be expected to be a SLcuda_Type of the same type (and
+  will error if input is different). Other inputs should be one of
+  float, double, or int.
 
  EXAMPLE
   Lets write a kernel that trivially multiplies two vectors called

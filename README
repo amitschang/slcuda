@@ -1,0 +1,10 @@
+SLcuda is a NVIDIA CUDA runtime implementation for SLang, for general
+purpose programming of NVIDIA GPUs. It is broken into several modules,
+the main module (cuda-module.cu) is the only one necessary to manage
+data on the GPU, kernels can be dynamically created with functions in
+cuda.sl. Other modules in here implement certain "canned" functions,
+such as reductions (cuda-reduce.cu, cured.sl) and image smoothing
+(cuda-image.cu, cuimg.sl). Random number generation is built into the
+main module.
+
+See INSTALL for installation instructions and pre-requisites.

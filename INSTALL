@@ -1,0 +1,31 @@
+The following are required to use and install this package:
+
+ - An NVIDIA GPU (!)
+ - The CUDA SDK (see http://www.nvidia.com/object/cuda_home_new.html)
+   which includes the NVCC compiler
+ - SLang (www.jedsoft.org/slang/)
+
+With these components installation should be simple. The default
+makefile assumes the SDK components are in the directory
+
+/usr/local/cuda/*
+
+Just edit as necessary, and build and install with:
+
+make
+make install
+
+GPUs come in different compute capabilities, which can only be
+detected once code is compiled. This is specified with the -arch flag
+in NVFLAGS. Default is 1.0 which is the lowest capability and does not
+have double support. If you do not know the capability of your GPU,
+simply compile once, then in a slsh shell do
+
+slsh> require("cuda");
+slsh> i=cuda_info(); % the default device
+slsh> ()=printf("%d%d\n",i.major,i.minor);
+30
+
+That number prefixed with "sm_" can be used for the arch to get the
+best performance out of your card.
+

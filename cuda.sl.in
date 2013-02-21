@@ -4,6 +4,10 @@ require("rand");
 variable CURAND_DEFAULT_TYPE=Float_Type;
 variable CURAND_DEFAULT_GEN_TYPE=CURAND_RNG_PSEUDO_DEFAULT;
 variable CURAND_DEFAULT_GEN;
+private variable TYPE_MAP=Assoc_Type[String_Type];
+TYPE_MAP["double"]="SLANG_DOUBLE_TYPE";
+TYPE_MAP["float"]="SLANG_FLOAT_TYPE";
+TYPE_MAP["int"]="SLANG_INT_TYPE";
 
 private define nvcompileandimport(modname){
     variable r;
@@ -107,6 +111,9 @@ define cuda_add_function(name, kernel){
 	    ()=fprintf(fp,"SLcuda_Type *cuda_%d;\n",i);
 	    ()=fprintf(fp,"%s *arg_%d;\n",data_types[i],i);
 	    ()=fprintf(fp,"if (NULL==(cuda_%d=slcuda_pop_cuda())){return;}",i);
+	    ()=fprintf(fp,"if (cuda_%d->type != %s){\n",i,TYPE_MAP[data_types[i]]);
+	    ()=fprintf(fp,"SLang_verror(SL_USAGE_ERROR,");
+	    ()=fprintf(fp,"\"Wrong type argument %d\");\nreturn; }\n",i);
 	    ()=fprintf(fp,"arg_%d=(%s *)cuda_%d->dptr;\n",i,data_types[i],i);
 	    n=i;
 	}
@@ -116,13 +123,18 @@ define cuda_add_function(name, kernel){
 	}
 	else if (input_types[i]==Double_Type){
 	    ()=fprintf(fp,"double arg_%d_in;\n",i);
-	    ()=fprintf(fp,"float  arg_%d;\n",i);
 	    ()=fprintf(fp,"if(-1==SLang_pop_double(&arg_%d_in)){ return; }\n",i);
-	    ()=fprintf(fp,"arg_%d=(float)arg_%d_in;\n",i,i);
+	    if (data_types[i]=="float"){
+		()=fprintf(fp,"float  arg_%d;\n",i);
+		()=fprintf(fp,"arg_%d=(float)arg_%d_in;\n",i,i);
+	    }
+	    else {
+		()=fprintf(fp,"arg_%d=(double)arg_%d_in;\n",i,i);
+	    }
 	}
     }
     ()=fprintf(fp,"int N=cuda_%d->nelems;\n",n);
-    ()=fprintf(fp,"int bx, by, block_size = %d;\n",CUDA_BLOCK_SIZE);
+    ()=fprintf(fp,"int bx, by, block_size = SLCUDA_BLOCK_SIZE;\n");
     ()=fprintf(fp,"slcuda_compute_dims2d( N, block_size, &bx, &by);\n");
     ()=fprintf(fp,"dim3 n_blocks(bx, by);\n");
     ()=fputs(kname+" <<< n_blocks, block_size >>> (",fp);
@@ -133,8 +145,7 @@ define cuda_add_function(name, kernel){
     ()=fputs(",N",fp);
     ()=fputs(");\n}\n",fp);
     ()=fputs("int init_"+modname+"_module_ns (char *ns_name){\n",fp);
-    ()=fputs("SLang_NameSpace_Type *ns;\n",fp);
-    ()=fputs("if (NULL == (ns = SLns_create_namespace (ns_name)))\n",fp);
+    ()=fputs("if (NULL == SLns_create_namespace (ns_name))\n",fp);
     ()=fputs("return -1;\n",fp);
     ()=fprintf(fp,"SLadd_intrinsic_function(\"%s\",",name);
     ()=fprintf(fp,"(FVOID_STAR)handler,SLANG_VOID_TYPE,0);\n");
