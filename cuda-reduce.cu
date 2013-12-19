@@ -332,6 +332,7 @@ static double slcuda_sum_reduce (SLcuda_Type *arr, int inplace)
   int dx, dy;
   int dsize = arr->size/arr->nelems;
   int smem = SLCUDA_BLOCK_SIZE*dsize;
+
   // compute dimensions in case we need temp array
   if (!inplace){
     slcuda_compute_dims2d( N/2, SLCUDA_BLOCK_SIZE, &dx, &dy);

@@ -26,9 +26,9 @@ int SLcuda_Type_Id = -1;
 typedef struct
 {
   int devid;
-  int size;
   int ndims;
-  int nelems;
+  unsigned long nelems;
+  unsigned long size;
   int valid;
   int type;
   SLindex_Type dims[3];
@@ -222,8 +222,8 @@ static void slcuda_cuda_info (void)
   }
 
   printf("Cuda object is on device %d\n",cuda->devid);
-  printf("with a total size of %d\n",cuda->size);
-  printf("it has %d elemens in %d dimensions\n",cuda->nelems,cuda->ndims);
+  printf("with a total size of %lu\n",cuda->size);
+  printf("it has %lu elemens in %d dimensions\n",cuda->nelems,cuda->ndims);
 }  
 
 static void slcuda_free (SLcuda_Type *cuda)
@@ -262,7 +262,7 @@ static void slcuda_free_intrin (void)
   cuda->valid=0;
 }
 
-SLcuda_Type *slcuda_init_cuda(int size, SLtype type, int ndims, int *dims)
+SLcuda_Type *slcuda_init_cuda(unsigned long size, SLtype type, int ndims, int *dims)
 {
   void *out;
   SLcuda_Type *cuda_o=
@@ -291,7 +291,7 @@ static void slcuda_init_array (void)
 {
   SLang_Array_Type *arr;
   SLcuda_Type *cuda;
-  int size;
+  unsigned long size;
 
   if (-1==SLang_pop_array(&arr,0))
     return;
@@ -319,7 +319,7 @@ static void slcuda_init_dev_array (void)
   double inc=0;
   int initvalspecified=0;
   int nelems=1;
-  int size;
+  unsigned long size;
 
   if (4==SLang_Num_Function_Args){
     SLang_pop_double(&inc);
